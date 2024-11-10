@@ -70,9 +70,9 @@ This project is an interactive search bar with autocomplete functionality. It dy
   - Manages frequently searched terms for prioritized suggestions.
 
 ## Authors
-1.[Varchasva Raj Saxena](https://github.com/Varchasva-Raj-Saxena-31)
-2.[Anmol Yadav](https://github.com/AnmolYadav1301)
-3.[Abhinash Roy](https://github.com/Abhinashroy)
+1.[Varchasva Raj Saxena](https://github.com/Varchasva-Raj-Saxena-31)</br>
+2.[Anmol Yadav](https://github.com/AnmolYadav1301)</br>
+3.[Abhinash Roy](https://github.com/Abhinashroy)</br>
 4.[Deepanshu ]()
 
 ---
