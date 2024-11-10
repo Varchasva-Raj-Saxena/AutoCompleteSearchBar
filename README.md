@@ -19,12 +19,11 @@ This project is an interactive search bar with autocomplete functionality. It dy
 ## Installation and Setup
 1. **Clone the repository**:  
       ```bash
-      git clone <repository_url>
+      git clone https://github.com/Abhinashroy/AutoCompleteSearchBar
       ```
 2. **Dependencies**:
    - Ensure you have a compatible C++ compiler (e.g., g++).
    - A web server for running the `index.html` (e.g., Live Server in VS Code).
-   - Node.js and npm if server-side autocomplete functionality is built with Node.
 
 3. **Setup Instructions**:
    - Compile the C++ backend by running:
