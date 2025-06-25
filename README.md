@@ -14,8 +14,10 @@ Trained on an **Indian cricket dataset**, this hybrid system delivers fast sugge
 
 > ☑️ **Live Web Demo:** Try it now at [http://34.131.245.79:8000/](http://34.131.245.79:8000/)
 
-> 🎬 **Demo**
-![Demo](assets/demo.gif)
+<h3>🎥 Demo</h3>
+<p>
+  <img src="assets/demo.gif" width="500"/>
+</p>
 
 ---
 
