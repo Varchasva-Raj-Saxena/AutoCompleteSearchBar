@@ -1,23 +1,15 @@
-// Define the target Windows version to use the Windows Sockets 2 (Winsock) library
-#define _WIN32_WINNT 0x501
-
-// Include the necessary Windows Sockets and Internet Protocol libraries
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-// Link the program with the Winsock library during compilation
-#pragma comment(lib, "ws2_32.lib")  
-
-// Include standard libraries for input/output, data structures, and other utilities
 #include <iostream>
 #include <unordered_map>
 #include <vector>
 #include <queue>
 #include <cstring>
-#include <algorithm> // For std::min function
-#include <fstream>   // For file handling (reading/writing files)
-#include <regex>     // For regular expressions
-#include <queue>     // For priority_queue data structure
+#include <algorithm>
+#include <fstream>
+#include <regex>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 
 using namespace std;
 
@@ -25,7 +17,7 @@ using namespace std;
 #define INT_MAX 2147483647
 
 // Define default port number as a string for network communication
-#define DEFAULT_PORT "8080"
+#define DEFAULT_PORT 8080
 
 // Define buffer size for reading/writing data in chunks
 #define BUFFER_SIZE 1024
@@ -247,40 +239,60 @@ bool loadDictionary(Trie& trie, const string& filename) {
 }
     
 Trie trie;  // Create a Trie instance
-int boo = loadDictionary(trie, "random.txt");  // Load dictionary file into trie and store success status
+int boo = loadDictionary(trie, "cricket_words.txt");  // Load dictionary file into trie and store success status
+
+std::string sanitizeForJson(const std::string& input) {
+    std::string sanitized;
+    for (char c : input) {
+        switch (c) {
+            case '\"': sanitized += "\\\""; break;
+            case '\\': sanitized += "\\\\"; break;
+            case '\b': sanitized += "\\b"; break;
+            case '\f': sanitized += "\\f"; break;
+            case '\n': sanitized += " "; break;      // Replace newlines with space
+            case '\r': sanitized += " "; break;      // Replace carriage return
+            case '\t': sanitized += " "; break;      // Replace tabs
+            default:
+                // Only allow ASCII printable characters
+                if (c >= 0x20 && c <= 0x7E) {
+                    sanitized += c;
+                }
+                break;
+        }
+    }
+    return sanitized;
+}
 
 // Function to extract the query parameter from the JSON request string
 string extractQuery(const std::string& request) {
     std::smatch match;
-    std::regex queryRegex(R"("query"\s*:\s*"([^"]*)\")"); // Regex to find "query" parameter
-
-    // Search for the query pattern and extract it if found
+    std::regex queryRegex(R"("query"\s*:\s*\"([^\"]*)\")"); // Properly escaped double quotes
     if (std::regex_search(request, match, queryRegex) && match.size() > 1) {
-        return match.str(1); // Return the extracted query part
+        return match[1].str();
     }
-    return ""; // Return an empty string if no match is found
+    return "";
 }
 
-// Function to handle the incoming request, generate suggestions, and return an HTTP response
+// FIX: Add logging for debugging query extraction
 string handleRequest(const std::string& request) {
-    std::string query = extractQuery(request); // Extract query from JSON request
+    std::string query = extractQuery(request);
+    std::cerr << "Received query: " << query << std::endl; // Add debug log
 
-    vector<string> suggestions;  // Vector to store all suggestions
+    if (query.empty()) {
+        return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nMissing or malformed query parameter.";
+    }
 
-    // Get suggestions based on prefix match
+    vector<string> suggestions;
     vector<string> prefixMatches = trie.searchPrefix(query);
     suggestions.insert(suggestions.end(), prefixMatches.begin(), prefixMatches.end());
 
-    // Autocorrect suggestions based on infix match if prefix match is not enough
     vector<string> infixMatches = trie.searchInfix(query);
     for (const auto& word : infixMatches) {
-        // Add only unique suggestions
         if (find(suggestions.begin(), suggestions.end(), word) == suggestions.end()) {
             suggestions.push_back(word);
         }
     }
 
-    // Add suffix matches, avoiding duplicate suggestions
     vector<string> suffixMatches = trie.searchSuffix(query);
     for (const auto& word : suffixMatches) {
         if (find(suggestions.begin(), suggestions.end(), word) == suggestions.end()) {
@@ -288,7 +300,6 @@ string handleRequest(const std::string& request) {
         }
     }
 
-    // Add top searched words, avoiding duplicates and limiting to top 5 suggestions
     vector<string> topSearches = trie.getTopSearchedWords();
     for (const auto& word : topSearches) {
         if (find(suggestions.begin(), suggestions.end(), word) == suggestions.end()) {
@@ -296,125 +307,86 @@ string handleRequest(const std::string& request) {
         }
     }
 
-    // Build the JSON array response containing all suggestions
     std::string jsonResponse = "[";
     for (size_t i = 0; i < suggestions.size(); ++i) {
-        jsonResponse += "\"" + suggestions[i] + "\""; // Add each suggestion as a JSON string
-        if (i < suggestions.size() - 1) jsonResponse += ","; // Add comma between items
-    }
-    jsonResponse += "]"; // Close the JSON array
+        jsonResponse += "\"" + sanitizeForJson(suggestions[i]) + "\"";
 
-    // Build the HTTP response with headers and JSON response body
+        if (i < suggestions.size() - 1) jsonResponse += ",";
+    }
+    jsonResponse += "]";
+
     std::string httpResponse = "HTTP/1.1 200 OK\r\n"
                                "Content-Type: application/json\r\n"
                                "Access-Control-Allow-Origin: *\r\n"
                                "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
                                "Access-Control-Allow-Headers: Content-Type\r\n\r\n"
                                + jsonResponse;
-    return httpResponse; // Return the full HTTP response
+    return httpResponse;
 }
-
 int main() {
-    WSADATA wsaData;
-    // Initialize Winsock
-    int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (iResult != 0) {
-        std::cerr << "WSAStartup failed: " << iResult << std::endl;
-        return 1;  // Return error if Winsock initialization fails
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    char buffer[BUFFER_SIZE] = {0};
+
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
     }
 
-    struct addrinfo* result = NULL, hints = {};
-    hints.ai_family = AF_INET;       // IPv4
-    hints.ai_socktype = SOCK_STREAM; // Stream socket (TCP)
-    hints.ai_protocol = IPPROTO_TCP; // TCP protocol
-    hints.ai_flags = AI_PASSIVE;     // Passive socket for binding
-
-    // Resolve the server address and port
-    iResult = getaddrinfo(NULL, DEFAULT_PORT, &hints, &result);
-    if (iResult != 0) {
-        std::cerr << "getaddrinfo failed: " << iResult << std::endl;
-        WSACleanup(); // Clean up Winsock
-        return 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
     }
 
-    // Create a socket for connecting to the client
-    SOCKET ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (ListenSocket == INVALID_SOCKET) {
-        std::cerr << "Error at socket(): " << WSAGetLastError() << std::endl;
-        freeaddrinfo(result); // Free address information
-        WSACleanup();         // Clean up Winsock
-        return 1;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(DEFAULT_PORT);
+
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
     }
 
-    // Bind the socket to the address
-    iResult = bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen);
-    if (iResult == SOCKET_ERROR) {
-        std::cerr << "bind failed: " << WSAGetLastError() << std::endl;
-        freeaddrinfo(result);         // Free address information
-        closesocket(ListenSocket);     // Close the listening socket
-        WSACleanup();                 // Clean up Winsock
-        return 1;
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
     }
 
-    freeaddrinfo(result); // Free the address information as it is no longer needed
-
-    // Listen for incoming connections
-    if (listen(ListenSocket, SOMAXCONN) == SOCKET_ERROR) {
-        std::cerr << "listen failed: " << WSAGetLastError() << std::endl;
-        closesocket(ListenSocket);     // Close the listening socket
-        WSACleanup();                 // Clean up Winsock
-        return 1;
-    }
-
-    // Print a message indicating that the server is listening for incoming connections
-    std::cout << "Server is listening on port " << DEFAULT_PORT << std::endl;
-
-    string input;
+    std::cout << "Server listening on port " << DEFAULT_PORT << std::endl;
 
     while (true) {
-    // Accept a client connection
-    SOCKET ClientSocket = accept(ListenSocket, NULL, NULL);
-    if (ClientSocket == INVALID_SOCKET) {
-        std::cerr << "accept failed: " << WSAGetLastError() << std::endl;
-        closesocket(ListenSocket); // Close the listening socket
-        WSACleanup();              // Clean up Winsock
-        return 1;                  // Exit if accept fails
-    }
-
-    // Buffer for receiving data from the client
-    char recvbuf[BUFFER_SIZE];
-    int recvbuflen = BUFFER_SIZE;
-
-    // Receive data from the client
-    iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
-    if (iResult > 0) {
-        std::string request(recvbuf, iResult); // Convert received data to a string
-
-        // Step 1: Check if the request method is OPTIONS
-        if (request.find("OPTIONS") == 0) {
-            // Step 2: Send a CORS preflight response and return immediately
-            std::string optionsResponse = "HTTP/1.1 204 No Content\r\n"
-                                          "Access-Control-Allow-Origin: *\r\n"
-                                          "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
-                                          "Access-Control-Allow-Headers: Content-Type\r\n\r\n";
-            send(ClientSocket, optionsResponse.c_str(), optionsResponse.size(), 0); // Send preflight response
-            closesocket(ClientSocket); // Close client connection after handling preflight
-            continue;                  // Move to the next client request
+        if ((new_socket = accept(server_fd, (struct sockaddr*)&address,
+                                 (socklen_t*)&addrlen)) < 0) {
+            perror("accept");
+            continue;
         }
 
-        // Process and generate a response for the client request
-        std::string response = handleRequest(request);
+        memset(buffer, 0, BUFFER_SIZE);
+        int valread = read(new_socket, buffer, BUFFER_SIZE);
+        if (valread <= 0) {
+            close(new_socket);
+            continue;
+        }
 
-        // Send the response, including CORS headers, for regular requests
-        send(ClientSocket, response.c_str(), response.size(), 0);
+        std::string request(buffer, valread);
+
+        if (request.find("OPTIONS") == 0) {
+            std::string optionsResponse =
+                "HTTP/1.1 204 No Content\r\n"
+                "Access-Control-Allow-Origin: *\r\n"
+                "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
+                "Access-Control-Allow-Headers: Content-Type\r\n\r\n";
+            send(new_socket, optionsResponse.c_str(), optionsResponse.size(), 0);
+            close(new_socket);
+            continue;
+        }
+
+        std::string response = handleRequest(request);
+        send(new_socket, response.c_str(), response.size(), 0);
+        close(new_socket);
     }
 
-    // Close the client socket after handling the request
-    closesocket(ClientSocket);
-}
-
-// Clean up: Close the listening socket and clean up Winsock
-closesocket(ListenSocket);
-WSACleanup();
-return 0;
+    return 0;
 }

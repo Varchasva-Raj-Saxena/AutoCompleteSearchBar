@@ -1,116 +1,152 @@
-const btnEle = document.querySelector(".search-btn");
-const containerEle = document.querySelector(".search-container");
+const btnEle               = document.querySelector(".search-btn");
+const containerEle         = document.querySelector(".search-container");
 const suggestionsContainer = document.querySelector(".suggestions-container");
-const searchInput = document.querySelector(".search-input");
+const searchInput          = document.querySelector(".search-input");
+const ghostTextContainer   = document.querySelector(".ghost-text");
 
-let currentFocus = -1;
+const API_BASE = "http://34.131.245.79";
 
+let currentFocus    = -1;
+let pendingNextWords= "";
+
+/** measure text width in px in same font */
+const measureText = (() => {
+  const canvas = document.createElement("canvas");
+  const ctx    = canvas.getContext("2d");
+  return (text, font) => {
+    ctx.font = font;
+    return ctx.measureText(text).width;
+  };
+})();
+
+/** toggle open */
 btnEle.addEventListener("click", () => {
-    containerEle.classList.toggle("active");
-    searchInput.focus();
-    suggestionsContainer.innerHTML = "";
+  containerEle.classList.toggle("active");
+  searchInput.focus();
+  suggestionsContainer.innerHTML = "";
 });
 
+/** input & fetching */
 searchInput.addEventListener("input", async () => {
-    const query = searchInput.value;
-    const cursorPosition = searchInput.selectionStart;
+  const val      = searchInput.value;
+  const lastChar = val.slice(-1);
 
-    // Split text into words and identify the word being edited
-    const beforeCursor = query.slice(0, cursorPosition);
-    const afterCursor = query.slice(cursorPosition);
-    
-    // Find word boundaries around cursor
-    const wordsBeforeCursor = beforeCursor.split(" ");
-    const wordsAfterCursor = afterCursor.split(" ");
-    
-    // Get the partial word at cursor
-    const currentWordBefore = wordsBeforeCursor[wordsBeforeCursor.length - 1];
-    const currentWordAfter = wordsAfterCursor[0];
-    
-    // Combine the parts of the current word
-    const currentWord = (currentWordBefore + currentWordAfter).trim();
-    
-    // Get the part of the word before the cursor for matching
-    const searchPrefix = currentWordBefore.trim();
+  // always show dropdown if typing
+  containerEle.classList.add("active");
 
-    if (searchPrefix.length > 0) {
-        // Convert the search prefix to lowercase before sending to the server
-        const lowercasePrefix = searchPrefix.toLowerCase();
-        
-        const response = await fetch("http://localhost:8080", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: lowercasePrefix })
-        });
-
-        const suggestions = await response.json();
-        
-        console.log("Suggestions from server:", suggestions);
-        // Calculate prefix and suffix for suggestion display
-        const prefixWords = wordsBeforeCursor.slice(0, -1);
-        const suffixWords = wordsAfterCursor.slice(1);
-        const prefixText = prefixWords.length > 0 ? prefixWords.join(" ") + " " : "";
-        const suffixText = suffixWords.length > 0 ? " " + suffixWords.join(" ") : "";
-
-        displaySuggestions(suggestions, prefixText, suffixText, searchPrefix);
-    } else {
-        suggestionsContainer.innerHTML = "";
-    }
-});
-
-function displaySuggestions(suggestions, prefixText, suffixText, searchPrefix) {
-    suggestionsContainer.innerHTML = "";
-    currentFocus = -1;
-
-    suggestions.forEach(suggestion => {
-        const item = document.createElement("div");
-        item.classList.add("suggestion-item");
-        
-        // Construct full suggestion text with surrounding words
-        const fullText = `${prefixText}${suggestion}${suffixText}`.trim();
-        item.textContent = fullText;
-
-        item.addEventListener("click", () => {
-            searchInput.value = fullText;
-            searchInput.focus();
-            suggestionsContainer.innerHTML = "";
-        });
-
-        suggestionsContainer.appendChild(item);
+  /**––– LSTM next-word on space —––*/
+  if (lastChar === " " && val.trim().length > 0) {
+    const resp = await fetch(`${API_BASE}:5000/predict`, {
+      method: "POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ text: val.trim() })
     });
-}
+    if (resp.ok) {
+      const { next_word } = await resp.json();
+      const baseCount = val.trim().split(" ").length;
+      const tokens    = next_word.split(" ").slice(baseCount);
+      pendingNextWords = tokens.join(" ");
 
-searchInput.addEventListener("keydown", (e) => {
-    const items = suggestionsContainer.querySelectorAll(".suggestion-item");
-    if (e.key === "ArrowDown") {
-        currentFocus++;
-        addActive(items);
-    } else if (e.key === "ArrowUp") {
-        currentFocus--;
-        addActive(items);
-    } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (currentFocus > -1 && items[currentFocus]) {
-            searchInput.value = items[currentFocus].textContent;
-            suggestionsContainer.innerHTML = "";
-        }
+      // measure & position ghost
+      const style       = getComputedStyle(searchInput);
+      const font        = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const prefixWidth = measureText(val, font);
+      const wrapperPad  = parseInt(getComputedStyle(document.querySelector(".input-wrapper")).paddingLeft);
+      ghostTextContainer.style.left = `${wrapperPad + prefixWidth}px`;
+      ghostTextContainer.textContent = pendingNextWords;
     }
+  } else {
+    pendingNextWords = "";
+    ghostTextContainer.textContent = "";
+  }
+
+  /**––– Trie prefix/infix/suffix –––*/
+  // find current word before cursor
+  const cursorPos         = searchInput.selectionStart;
+  const beforeCursor      = val.slice(0, cursorPos);
+  const wordsBefore       = beforeCursor.split(" ");
+  const searchPrefix      = wordsBefore[wordsBefore.length - 1].trim().toLowerCase();
+
+  if (searchPrefix) {
+    const res = await fetch(`${API_BASE}:8080/`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ query: searchPrefix })
+    });
+    if (res.ok) {
+      const suggestions = await res.json();
+      const prefixWords = wordsBefore.slice(0,-1);
+      const suffixWords = val.slice(cursorPos).split(" ").slice(1);
+      const prefixText  = prefixWords.length? prefixWords.join(" ") + " " : "";
+      const suffixText  = suffixWords.length? " " + suffixWords.join(" ") : "";
+      displaySuggestions(suggestions, prefixText, suffixText);
+    }
+  } else {
+    suggestionsContainer.innerHTML = "";
+  }
 });
 
-function addActive(items) {
-    if (!items) return;
-    removeActive(items);
-    if (currentFocus >= items.length) currentFocus = 0;
-    if (currentFocus < 0) currentFocus = items.length - 1;
-    items[currentFocus].classList.add("active-suggestion");
+/** render dropdown */
+function displaySuggestions(list, prefixText, suffixText) {
+  suggestionsContainer.innerHTML = "";
+  currentFocus = -1;
+  list.forEach(sg => {
+    const item = document.createElement("div");
+    item.className = "suggestion-item";
+    item.textContent = `${prefixText}${sg.trim()}${suffixText}`.trim();
+    item.addEventListener("click", () => {
+      // Place the chosen suggestion exactly, without trailing space
+      searchInput.value = item.textContent;
+      containerEle.classList.remove("active");
+      suggestionsContainer.innerHTML = "";
+    });
+    suggestionsContainer.appendChild(item);
+  });
 }
 
-function removeActive(items) {
-    items.forEach(item => item.classList.remove("active-suggestion"));
-}
-
-document.addEventListener("click", (e) => {
-    if (!containerEle.contains(e.target)) {
-        suggestionsContainer.innerHTML = "";
+/** keyboard nav & tab accept */
+searchInput.addEventListener("keydown", e => {
+  const items = suggestionsContainer.querySelectorAll(".suggestion-item");
+  if (e.key === "Tab" && pendingNextWords) {
+    e.preventDefault();
+    searchInput.value += pendingNextWords + " ";
+    pendingNextWords = "";
+    ghostTextContainer.textContent = "";
+    suggestionsContainer.innerHTML = "";
+    return;
+  }
+  if (e.key === "ArrowDown") {
+    currentFocus++;
+    setActive(items);
+  } else if (e.key === "ArrowUp") {
+    currentFocus--;
+    setActive(items);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (currentFocus >= 0 && items[currentFocus]) {
+      // On Enter, also insert without extra space
+      searchInput.value = items[currentFocus].textContent;
+      suggestionsContainer.innerHTML = "";
+      currentFocus = -1;
     }
+  }
+});
+
+/** highlight */
+function setActive(items) {
+  items.forEach(i=>i.classList.remove("active-suggestion"));
+  if (!items.length) return;
+  if (currentFocus >= items.length) currentFocus = 0;
+  if (currentFocus < 0) currentFocus = items.length -1;
+  items[currentFocus].classList.add("active-suggestion");
+}
+
+/** click outside closes */
+document.addEventListener("click", e => {
+  if (!containerEle.contains(e.target)) {
+    containerEle.classList.remove("active");
+    suggestionsContainer.innerHTML = "";
+    pendingNextWords = "";
+    ghostTextContainer.textContent = "";
+  }
 });
